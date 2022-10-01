@@ -6,19 +6,20 @@
 import { Orientation } from 'vs/base/browser/ui/splitview/splitview';
 import { IAction } from 'vs/base/common/actions';
 import { Event } from 'vs/base/common/event';
+import { Lazy } from 'vs/base/common/lazy';
 import { IDisposable } from 'vs/base/common/lifecycle';
 import { OperatingSystem } from 'vs/base/common/platform';
 import { URI } from 'vs/base/common/uri';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 import { IKeyMods } from 'vs/platform/quickinput/common/quickInput';
-import { IMarkProperties, ITerminalCapabilityStore, ITerminalCommand } from 'vs/platform/terminal/common/capabilities/capabilities';
+import { IMarkProperties, ITerminalCapabilityStore, ITerminalCommand, ITerminalOutputMatcher } from 'vs/platform/terminal/common/capabilities/capabilities';
 import { IExtensionTerminalProfile, IReconnectionProperties, IShellIntegration, IShellLaunchConfig, ITerminalDimensions, ITerminalLaunchError, ITerminalProfile, ITerminalTabLayoutInfoById, TerminalExitReason, TerminalIcon, TerminalLocation, TerminalShellType, TerminalType, TitleEventSource, WaitOnExitValue } from 'vs/platform/terminal/common/terminal';
 import { IWorkspaceFolder } from 'vs/platform/workspace/common/workspace';
 import { EditorInput } from 'vs/workbench/common/editor/editorInput';
 import { IEditableData } from 'vs/workbench/common/views';
 import { TerminalFindWidget } from 'vs/workbench/contrib/terminal/browser/terminalFindWidget';
 import { ITerminalStatusList } from 'vs/workbench/contrib/terminal/browser/terminalStatusList';
-import { IContextualAction } from 'vs/workbench/contrib/terminal/browser/xterm/contextualActionAddon';
+import { ITerminalQuickFix } from 'vs/workbench/contrib/terminal/browser/xterm/quickFixAddon';
 import { INavigationMode, IRegisterContributedProfileArgs, IRemoteTerminalAttachTarget, IStartExtensionTerminalRequest, ITerminalBackend, ITerminalConfigHelper, ITerminalFont, ITerminalProcessExtHostProxy } from 'vs/workbench/contrib/terminal/common/terminal';
 import { EditorGroupColumn } from 'vs/workbench/services/editor/common/editorGroupColumn';
 import { IMarker } from 'xterm';
@@ -241,7 +242,7 @@ export interface ITerminalEditorService extends ITerminalInstanceHost {
 	detachActiveEditorInstance(): ITerminalInstance;
 	detachInstance(instance: ITerminalInstance): void;
 	splitInstance(instanceToSplit: ITerminalInstance, shellLaunchConfig?: IShellLaunchConfig): ITerminalInstance;
-	revealActiveEditor(preserveFocus?: boolean): void;
+	revealActiveEditor(preserveFocus?: boolean): Promise<void>;
 	resolveResource(instance: ITerminalInstance | URI): URI;
 	reviveInput(deserializedInput: IDeserializedTerminalEditorInput): EditorInput;
 	getInputFromResource(resource: URI): EditorInput;
@@ -458,9 +459,9 @@ export interface ITerminalInstance {
 
 	readonly statusList: ITerminalStatusList;
 
-	contextualActions: IContextualAction | undefined;
+	quickFix: ITerminalQuickFix | undefined;
 
-	readonly findWidget: TerminalFindWidget;
+	readonly findWidget: Lazy<TerminalFindWidget>;
 
 	/**
 	 * The process ID of the shell process, this is undefined when there is no process associated
@@ -582,6 +583,8 @@ export interface ITerminalInstance {
 	onExit: Event<number | ITerminalLaunchError | undefined>;
 
 	onDidChangeFindResults: Event<{ resultIndex: number; resultCount: number } | undefined>;
+
+	onDidFocusFindWidget: Event<void>;
 
 	readonly exitCode: number | undefined;
 
@@ -909,34 +912,25 @@ export interface ITerminalInstance {
 	openRecentLink(type: 'localFile' | 'url'): Promise<void>;
 
 	/**
-	 * Registers contextual action listeners
+	 * Registers quick fix providers
 	 */
-	registerContextualActions(...options: ITerminalContextualActionOptions[]): void;
+	registerQuickFixProvider(...options: ITerminalQuickFixOptions[]): void;
 
 	freePortKillProcess(port: string): Promise<void>;
 }
 
-export interface ITerminalContextualActionOptions {
-	actionName: string | DynamicActionName;
+export interface ITerminalQuickFixOptions {
 	commandLineMatcher: string | RegExp;
 	outputMatcher?: ITerminalOutputMatcher;
-	getActions: ContextualActionCallback;
-	exitCode?: number;
+	getQuickFixes: QuickFixCallback;
+	exitStatus?: boolean;
 }
-export type ContextualMatchResult = { commandLineMatch: RegExpMatchArray; outputMatch?: RegExpMatchArray | null };
-export type DynamicActionName = (matchResult: ContextualMatchResult) => string;
-export type ContextualActionCallback = (matchResult: ContextualMatchResult, command: ITerminalCommand) => ICommandAction[] | undefined;
+export type QuickFixMatchResult = { commandLineMatch: RegExpMatchArray; outputMatch?: RegExpMatchArray | null };
+export type QuickFixCallback = (matchResult: QuickFixMatchResult, command: ITerminalCommand) => ITerminalQuickFixAction[] | undefined;
 
-export interface ICommandAction extends IAction {
+export interface ITerminalQuickFixAction extends IAction {
 	commandToRunInTerminal?: string;
 	addNewLine?: boolean;
-}
-
-export interface ITerminalOutputMatcher {
-	lineMatcher: string | RegExp;
-	anchor?: 'top' | 'bottom';
-	offset?: number;
-	length?: number;
 }
 
 export interface IXtermTerminal {

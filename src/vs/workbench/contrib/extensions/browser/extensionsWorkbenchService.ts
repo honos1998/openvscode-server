@@ -685,7 +685,6 @@ export class ExtensionsWorkbenchService extends Disposable implements IExtension
 	private readonly webExtensions: Extensions | null = null;
 	private updatesCheckDelayer: ThrottledDelayer<void>;
 	private autoUpdateDelayer: ThrottledDelayer<void>;
-	private runningExtensions: IExtensionDescription[] | null = null;
 
 	private readonly _onChange: Emitter<IExtension | undefined> = new Emitter<IExtension | undefined>();
 	get onChange(): Event<IExtension | undefined> { return this._onChange.event; }
@@ -774,6 +773,10 @@ export class ExtensionsWorkbenchService extends Disposable implements IExtension
 		}, this));
 
 		this.queryLocal().then(() => {
+			this.extensionService.whenInstalledExtensionsRegistered().then(() => {
+				this.onDidChangeRunningExtensions(this.extensionService.extensions, []);
+				this._register(this.extensionService.onDidChangeExtensions(({ added, removed }) => this.onDidChangeRunningExtensions(added, removed)));
+			});
 			this.resetIgnoreAutoUpdateExtensions();
 			this.eventuallyCheckForUpdates(true);
 			this._reportTelemetry();
@@ -789,9 +792,6 @@ export class ExtensionsWorkbenchService extends Disposable implements IExtension
 		}));
 
 		this._register(this.storageService.onDidChangeValue(e => this.onDidChangeStorage(e)));
-
-		this._register(this.extensionService.onDidChangeExtensions(() => this.updateRunningExtensions()));
-		this.updateRunningExtensions();
 	}
 	private _reportTelemetry() {
 		const extensionIds = this.installed.filter(extension =>
@@ -802,33 +802,20 @@ export class ExtensionsWorkbenchService extends Disposable implements IExtension
 		this.telemetryService.publicLog2<InstalledExtensionsEvent, ExtensionsLoadClassification>('installedExtensions', { extensionIds: extensionIds.join(';'), count: extensionIds.length });
 	}
 
-	private updateRunningExtensions(): void {
-		function descriptionToIdentifier(desc: IExtensionDescription): IExtensionIdentifier {
-			return { id: desc.id ?? '', uuid: desc.uuid };
+	private async onDidChangeRunningExtensions(added: ReadonlyArray<IExtensionDescription>, removed: ReadonlyArray<IExtensionDescription>): Promise<void> {
+		const local = this.local;
+		const changedExtensions: IExtension[] = [];
+		const extsNotInstalled: IExtensionInfo[] = [];
+		for (const desc of added) {
+			const extension = local.find(e => areSameExtensions({ id: desc.identifier.value, uuid: desc.uuid }, e.identifier));
+			if (extension) {
+				changedExtensions.push(extension);
+			} else {
+				extsNotInstalled.push({ id: desc.identifier.value, uuid: desc.uuid });
+			}
 		}
-		this.extensionService.getExtensions().then(async runningExtensions => {
-			const deltaExtensionsDescription: IExtensionDescription[] = [];
-			deltaExtensionsDescription.push(...runningExtensions.filter(newExt => !this.runningExtensions?.find(oldExt => areSameExtensions(descriptionToIdentifier(newExt), descriptionToIdentifier(oldExt)))));
-			if (this.runningExtensions) {
-				deltaExtensionsDescription.push(...this.runningExtensions.filter(oldExt => !runningExtensions.find(newExt => areSameExtensions(descriptionToIdentifier(newExt), descriptionToIdentifier(oldExt)))));
-			}
-			this.runningExtensions = runningExtensions;
-
-			const installed = this.installed;
-			const deltaExtensions: IExtension[] = [];
-			const extsNotInstalled: IExtensionInfo[] = [];
-			for (const desc of deltaExtensionsDescription) {
-				const extension = installed.find(e => areSameExtensions(descriptionToIdentifier(desc), e.identifier));
-				if (extension) {
-					deltaExtensions.push(extension);
-				}
-				else {
-					extsNotInstalled.push({ id: desc.identifier.value, uuid: desc.uuid });
-				}
-			}
-			deltaExtensions.push(...await this.getExtensions(extsNotInstalled, CancellationToken.None));
-			deltaExtensions.forEach(e => this._onChange.fire(e));
-		});
+		changedExtensions.push(...await this.getExtensions(extsNotInstalled, CancellationToken.None));
+		changedExtensions.forEach(e => this._onChange.fire(e));
 	}
 
 	get local(): IExtension[] {
@@ -1010,12 +997,8 @@ export class ExtensionsWorkbenchService extends Disposable implements IExtension
 	}
 
 	private getReloadStatus(extension: IExtension): string | undefined {
-		if (!this.runningExtensions || !extension) {
-			return undefined;
-		}
-
 		const isUninstalled = extension.state === ExtensionState.Uninstalled;
-		const runningExtension = this.runningExtensions.find(e => areSameExtensions({ id: e.identifier.value, uuid: e.uuid }, extension!.identifier));
+		const runningExtension = this.extensionService.extensions.find(e => areSameExtensions({ id: e.identifier.value, uuid: e.uuid }, extension!.identifier));
 
 		if (isUninstalled) {
 			const canRemoveRunningExtension = runningExtension && this.extensionService.canRemoveExtension(runningExtension);
@@ -1604,14 +1587,15 @@ export class ExtensionsWorkbenchService extends Disposable implements IExtension
 			for (const extension of toCheck) {
 				checked.push(extension);
 			}
-			const extensionsToDisable = installed.filter(i => {
+			const extensionsToEanbleOrDisable = installed.filter(i => {
 				if (checked.indexOf(i) !== -1) {
 					return false;
 				}
-				if (i.enablementState === enablementState) {
+				const enable = enablementState === EnablementState.EnabledGlobally || enablementState === EnablementState.EnabledWorkspace;
+				const isExtensionEnabled = i.enablementState === EnablementState.EnabledGlobally || i.enablementState === EnablementState.EnabledWorkspace;
+				if (enable === isExtensionEnabled) {
 					return false;
 				}
-				const enable = enablementState === EnablementState.EnabledGlobally || enablementState === EnablementState.EnabledWorkspace;
 				return (enable || !i.isBuiltin) // Include all Extensions for enablement and only non builtin extensions for disablement
 					&& (options.dependencies || options.pack)
 					&& extensions.some(extension =>
@@ -1619,10 +1603,10 @@ export class ExtensionsWorkbenchService extends Disposable implements IExtension
 						|| (options.pack && extension.extensionPack.some(id => areSameExtensions({ id }, i.identifier)))
 					);
 			});
-			if (extensionsToDisable.length) {
-				extensionsToDisable.push(...this.getExtensionsRecursively(extensionsToDisable, installed, enablementState, options, checked));
+			if (extensionsToEanbleOrDisable.length) {
+				extensionsToEanbleOrDisable.push(...this.getExtensionsRecursively(extensionsToEanbleOrDisable, installed, enablementState, options, checked));
 			}
-			return extensionsToDisable;
+			return extensionsToEanbleOrDisable;
 		}
 		return [];
 	}
@@ -1785,6 +1769,24 @@ export class ExtensionsWorkbenchService extends Disposable implements IExtension
 		if (!this.isAutoUpdateIgnored(extensionKey)) {
 			this.ignoredAutoUpdateExtensions = [...this.ignoredAutoUpdateExtensions, extensionKey.toString()];
 		}
+	}
+
+	setExtensionIgnoresUpdate(extension: IExtension, ignoreAutoUpate: boolean): void {
+		const extensionKey = new ExtensionKey(extension.identifier, extension.version);
+		if (ignoreAutoUpate) {
+			this.ignoreAutoUpdate(extensionKey);
+		}
+		else if (this.isAutoUpdateIgnored(extensionKey)) {
+			this.ignoredAutoUpdateExtensions = this.ignoredAutoUpdateExtensions.filter(extensionId => extensionId !== extensionKey.toString());
+		}
+		else {
+			return;
+		}
+		this._onChange.fire(extension);
+	}
+
+	isExtensionIgnoresUpdates(extension: IExtension): boolean {
+		return this.isAutoUpdateIgnored(new ExtensionKey(extension.identifier, extension.version));
 	}
 
 	private isAutoUpdateIgnored(extensionKey: ExtensionKey): boolean {

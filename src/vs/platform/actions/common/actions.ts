@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Action, IAction, Separator, SubmenuAction } from 'vs/base/common/actions';
+import { Action, IAction, SubmenuAction } from 'vs/base/common/actions';
 import { CSSIcon } from 'vs/base/common/codicons';
 import { Event, MicrotaskEmitter } from 'vs/base/common/event';
 import { DisposableStore, IDisposable, toDisposable } from 'vs/base/common/lifecycle';
@@ -238,7 +238,7 @@ export interface IMenuService {
 	/**
 	 * Reset the menu's hidden states.
 	 */
-	resetHiddenStates(menuId: MenuId | undefined): void;
+	resetHiddenStates(menuIds: readonly MenuId[] | undefined): void;
 }
 
 export type ICommandsMap = Map<string, ICommandAction>;
@@ -381,28 +381,9 @@ export class SubmenuItemAction extends SubmenuAction {
 	constructor(
 		readonly item: ISubmenuItem,
 		readonly hideActions: IMenuItemHide | undefined,
-		private readonly _menuService: IMenuService,
-		private readonly _contextKeyService: IContextKeyService,
-		private readonly _options?: IMenuActionOptions
+		actions: IAction[],
 	) {
-		super(`submenuitem.${item.submenu.id}`, typeof item.title === 'string' ? item.title : item.title.value, [], 'submenu');
-	}
-
-	override get actions(): readonly IAction[] {
-		const result: IAction[] = [];
-		const menu = this._menuService.createMenu(this.item.submenu, this._contextKeyService);
-		const groups = menu.getActions(this._options);
-		menu.dispose();
-		for (const [, actions] of groups) {
-			if (actions.length > 0) {
-				result.push(...actions);
-				result.push(new Separator());
-			}
-		}
-		if (result.length) {
-			result.pop(); // remove last separator
-		}
-		return result;
+		super(`submenuitem.${item.submenu.id}`, typeof item.title === 'string' ? item.title : item.title.value, actions, 'submenu');
 	}
 }
 
@@ -573,6 +554,13 @@ export interface IAction2Options extends ICommandAction {
 	 * showing keybindings that have no other UX.
 	 */
 	description?: ICommandHandlerDescription;
+
+	/**
+	 * @deprecated workaround added for https://github.com/microsoft/vscode/issues/162004
+	 * This action doesn't do anything is just a workaround for rendering "something"
+	 * inside a specific toolbar
+	 */
+	_isFakeAction?: true;
 }
 
 export abstract class Action2 {
